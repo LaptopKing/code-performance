@@ -61,22 +61,25 @@ Then type a command to switch pages, no rescan:
 
 ## Example
 
-code-audit reviewed by this skill (`/code-performance ~/projects/code-audit`):
+code-audit reviewed by this skill (`/code-performance ~/projects/code-audit`), after `apply 1`:
 
 ```text
-PERFORMANCE · code-audit · 10 files · whole scope · 2026-11-24 10:32
+PERFORMANCE · code-audit · 10 files · whole scope · 2026-11-24 10:44
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 WHERE TIME GOES  the 3 security scanners (minutes per audit); everything else takes seconds
-FASTER ROUTES    2 found, same results · 1 timed
-SPOTS CHECKED    4 suspicious patterns: 1 became a route · 3 harmless
+FASTER ROUTES    1 found, same results · 1 applied
+SPOTS CHECKED    4 suspicious patterns: 0 became routes · 4 harmless
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
      what gets faster                                         runs       work   gain                    where
-  1. Run the 3 security scanners at the same time             often      small  sum → slowest scanner   scripts/scan.py:500-505
-  2. Find the terminal size with 1 process instead of up to 8 often      small  16.1 ms→12.0 ms timed   scripts/render.py:30
+  1. Run the 3 security scanners at the same time (applied)   often      small  4.78 s→2.27 s timed     scripts/scan.py:500-505
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-timed = measured on a safe copy, others are estimates · unsure = one thing not verified yet
-next: show 1 (details) · apply 1 (make the change and test it) · leads (all spots) · hotpaths
+timed = measured, others are estimates · unsure = one thing not verified yet
+next: show 1 (details) · leads (all spots) · hotpaths
 ```
+
+The review found one faster route: run the 3 security scanners at the same time. `apply 1` made the
+change, kept the 15 tests green and timed it with offline fake scanners: 4.78 s → 2.27 s with the
+same findings. The other 4 suspicious spots were checked and are harmless (`leads` shows why).
 
 Suspicious spots come from `scripts/scan.py`: ast-grep rules for patterns that are often slow, such as
 a database call, a process start or a list search inside a loop. Each one comes with a code excerpt,

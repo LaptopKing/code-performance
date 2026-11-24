@@ -198,6 +198,10 @@ def tag(x):
 
 
 def gain_text(x):
+    """The best number we have: timed on the real code after apply, else the safe-copy timing, else the guess."""
+    a = x.get("applied") or {}
+    if a.get("status") == "kept" and a.get("bench_before"):
+        return f"{a['bench_before'].split(' ±')[0]}→{a['bench_after'].split(' ±')[0]} timed"
     m = x.get("measured") or {}
     return f"{m['before']}→{m['after']} timed" if m.get("before") else x.get("gain", "")
 
@@ -266,9 +270,13 @@ def page_overview(p, facts, scout, specs, props, n, flt):
     rows = live(props)
     p.listing(rows, lambda i, x: prop_line(p, x, i), n, footer_lines=3, page_cmd="overview")
     p.rule()
-    ex = "1" if rows else "<n>"
-    p.add("timed = measured on a safe copy, others are estimates · unsure = one thing not verified yet")
-    p.add(f"next: show {ex} (details) · apply {ex} (make the change and test it) · leads (all spots) · hotpaths")
+    todo = [i for i, x in enumerate(rows, 1) if not x.get("applied")]
+    p.add("timed = measured, others are estimates · unsure = one thing not verified yet")
+    if todo:
+        p.add(f"next: show {todo[0]} (details) · apply {todo[0]} (make the change and test it) · "
+              "leads (all spots) · hotpaths")
+    else:
+        p.add("next: show 1 (details) · leads (all spots) · hotpaths" if rows else "next: leads (all spots)")
 
 
 def page_proposals(p, facts, scout, specs, props, n, flt):
@@ -298,8 +306,10 @@ def page_show(p, facts, scout, specs, props, n, flt):
         p.add(f"{label:<10}{x.get(key, '')}")
     p.add(f"{'note':<10}{x.get('verify_note') or x.get('note', '')}")
     m = x.get("measured")
-    p.add(f"{'measured':<10}" + (f"{m.get('before')} → {m.get('after')}  ({m.get('how', '')})" if m else "not measured"))
     a = x.get("applied")
+    if m or not a:  # after apply, the applied block below holds the timing
+        p.add(f"{'measured':<10}" + (f"{m.get('before')} → {m.get('after')}  ({m.get('how', '')})" if m
+                                     else "not measured"))
     if a:
         p.rule()
         p.add(f"applied   {a.get('status')} · tests {a.get('tests_before')} → {a.get('tests_after')}")
@@ -308,7 +318,10 @@ def page_show(p, facts, scout, specs, props, n, flt):
     if x.get("smells"):
         p.add(f"{'covers':<10}{', '.join(x['smells'])}")
     p.rule()
-    p.add(f"next: apply {num} (make the change and test it) · overview")
+    if a:
+        p.add("next: overview · leads (all spots)")
+    else:
+        p.add(f"next: apply {num} (make the change and test it) · overview")
 
 
 def page_hotpaths(p, facts, scout, specs, props, n, flt):
