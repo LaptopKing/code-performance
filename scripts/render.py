@@ -16,12 +16,15 @@ from pathlib import Path
 
 # Lines Claude Code itself uses around a reply. Override with CODE_PERF_RESERVE.
 RESERVE = int(os.environ.get("CODE_PERF_RESERVE", "10"))
-VERDICT_ICON = {"confirmed": "✅", "unsure": "❔", "rejected": "❌"}
+VERDICTS = ("confirmed", "unsure", "rejected")
+RUNS = {"hot": "very often", "warm": "often", "cold": "rarely", "unknown": "?"}
+WORK = {"S": "small", "M": "medium", "L": "large"}
+MAX_WIDTH = 130  # wider pages stretch the columns apart
 GAIN = {"high": 3, "med": 2, "low": 1}
 HOT = {"hot": 3, "warm": 2, "unknown": 1.5, "cold": 1}
 EFFORT = {"S": 1, "M": 2, "L": 3}
 PAGES = ["overview", "proposals", "show", "hotpaths", "specialists", "rejected", "leads"]
-LEAD_ICON = {"proposed": "✅", "dismissed": "✖", "open": "·"}
+LEAD_WORD = {"proposed": "route", "dismissed": "harmless", "open": "not checked"}
 
 
 def term_size():
@@ -79,7 +82,7 @@ def pad(s, w):
 class Page:
     def __init__(self, rows, cols):
         self.h = max(8, rows - RESERVE)
-        self.w = max(50, cols - 4)
+        self.w = max(50, min(cols - 4, MAX_WIDTH))
         self.lines = []
 
     def add(self, s=""):
@@ -180,29 +183,57 @@ def score(x):
 
 def head(p, facts, title):
     inv = facts["inventory"]
-    mode = f"target: {facts['target']}" if facts.get("target") else "overall"
-    p.add(f"{title} · {facts['scope']} · {inv.get('files', '?')} files · {mode} · {facts['scanned_at'][:16]}")
+    mode = f"only: {facts['target']}" if facts.get("target") else "whole scope"
+    name = Path(facts["root"]).name + ("" if facts["scope"] == "." else f"/{facts['scope']}")
+    p.add(f"{title} · {name} · {inv.get('files', '?')} files · {mode} · {facts['scanned_at'][:16].replace('T', ' ')}")
     p.rule()
 
 
 def tag(x):
-    """Status icon: applied result wins over the verifier's verdict."""
+    """Words only for what needs attention; a fully checked route gets no mark."""
     a = x.get("applied")
     if a:
-        return "🚀" if a.get("status") == "kept" else "↩️"
-    return VERDICT_ICON.get(x.get("verdict"), "•")
+        return "applied" if a.get("status") == "kept" else "undone"
+    return {"unsure": "unsure", "rejected": "ruled out"}.get(x.get("verdict"), "")
+
+
+def gain_text(x):
+    m = x.get("measured") or {}
+    return f"{m['before']}→{m['after']} timed" if m.get("before") else x.get("gain", "")
+
+
+# Column widths: runs, work, gain, where. The title takes what is left.
+COLS = (10, 6, 23, 26)
+
+
+def ranks(props):
+    """Proposal id -> the number the user sees and types (1..n, best first). Ids stay internal."""
+    return {x.get("id"): i for i, x in enumerate(live(props), 1)}
+
+
+def find(props, key):
+    """A number from the dashboard (or an internal id) -> (number, proposal)."""
+    rows = live(props)
+    if key.isdigit() and 1 <= int(key) <= len(rows):
+        return int(key), rows[int(key) - 1]
+    for i, x in enumerate(rows, 1):
+        if x.get("id", "").lower() == key.lower():
+            return i, x
+    return None, None
 
 
 def prop_header(p):
-    return pad("     st id     hot  E title", p.w - 51) + " " + pad("gain / measured", 22) + " where"
+    title_w = p.w - 5 - sum(COLS) - len(COLS)
+    return ("     " + pad("what gets faster", title_w) + " " + pad("runs", COLS[0]) + " "
+            + pad("work", COLS[1]) + " " + pad("gain", COLS[2]) + " where")
 
 
-def prop_line(p, x, i=None):
-    meas = x.get("measured") or {}
-    gain = f"{meas['before']}→{meas['after']}" if meas.get("before") else x.get("gain", "")
-    num = f"{i:>2}. " if i is not None else ""
-    left = f"{num}{tag(x)} {x.get('id', '?'):<7}{x.get('hot', '?')[:4]:<5}{x.get('effort', '?')} "
-    return left + pad(x.get("title", ""), p.w - width(left) - 52) + " " + pad(gain, 22) + " " + lfit(x.get("where", ""), 28)
+def prop_line(p, x, i):
+    title = x.get("title", "") + (f" ({tag(x)})" if tag(x) else "")
+    title_w = p.w - 5 - sum(COLS) - len(COLS)
+    return (f"{i:>3}. " + pad(title, title_w) + " " + pad(RUNS.get(x.get("hot"), "?"), COLS[0])
+            + " " + pad(WORK.get(x.get("effort"), "?"), COLS[1]) + " " + pad(gain_text(x), COLS[2]) + " "
+            + lfit(x.get("where", ""), COLS[3]))
 
 
 def live(props):
@@ -218,23 +249,26 @@ def page_overview(p, facts, scout, specs, props, n, flt):
     head(p, facts, "PERFORMANCE")
     if scout["summary"]:
         p.add(f"WHERE TIME GOES  {scout['summary']}")
-    c = {k: sum(1 for x in props if x.get("verdict") == k) for k in VERDICT_ICON}
+    c = {k: sum(1 for x in props if x.get("verdict") == k) for k in VERDICTS}
     applied = sum(1 for x in props if x.get("applied"))
     measured = sum(1 for x in props if x.get("measured"))
-    p.add(f"PROPOSALS        ✅ {c['confirmed']} confirmed · ❔ {c['unsure']} unsure · ❌ {c['rejected']} rejected · "
-          f"{measured} measured · {applied} applied")
-    st = {k: sum(1 for g in facts["leads"] if g["status"] == k) for k in LEAD_ICON}
-    p.add(f"LEADS            {len(facts['leads'])} from ast-grep: {st['proposed']} proposed · "
-          f"{st['dismissed']} dismissed · {st['open']} not judged"
+    extra = [f"{c['unsure']} unsure" if c["unsure"] else "", f"{c['rejected']} ruled out" if c["rejected"] else "",
+             f"{measured} timed" if measured else "", f"{applied} applied" if applied else ""]
+    p.add(f"FASTER ROUTES    {len(live(props))} found, same results" + "".join(f" · {e}" for e in extra if e))
+    st = {k: sum(1 for g in facts["leads"] if g["status"] == k) for k in LEAD_WORD}
+    p.add(f"SPOTS CHECKED    {len(facts['leads'])} suspicious patterns: {st['proposed']} became {'a route' if st['proposed'] == 1 else 'routes'} · "
+          f"{st['dismissed']} harmless" + (f" · {st['open']} not checked yet" if st["open"] else "")
           + (f" · {facts['lead_note']}" if facts.get("lead_note") else ""))
     if not props and not st["dismissed"]:
         p.add("                 not judged yet: SKILL.md step 3 writes notes.json")
     p.rule()
-    p.add("TOP FASTER ROUTES")
     p.add(prop_header(p))
-    p.listing(live(props), lambda i, x: prop_line(p, x, i), n, footer_lines=2, page_cmd="overview")
+    rows = live(props)
+    p.listing(rows, lambda i, x: prop_line(p, x, i), n, footer_lines=3, page_cmd="overview")
     p.rule()
-    p.add("next: show <id> · proposals · hotpaths · specialists · rejected · leads · apply <id>")
+    ex = "1" if rows else "<n>"
+    p.add("timed = measured on a safe copy, others are estimates · unsure = one thing not verified yet")
+    p.add(f"next: show {ex} (details) · apply {ex} (make the change and test it) · leads (all spots) · hotpaths")
 
 
 def page_proposals(p, facts, scout, specs, props, n, flt):
@@ -242,21 +276,24 @@ def page_proposals(p, facts, scout, specs, props, n, flt):
     rows = [x for x in live(props) if matches(x, flt)]
     p.add(f"{len(rows)} live proposals{f' matching {flt!r}' if flt else ''} · ranked by verdict, gain × hot ÷ effort")
     p.add(prop_header(p))
-    p.listing(rows, lambda i, x: prop_line(p, x, i), n, footer_lines=2, page_cmd=f"proposals {flt}".strip())
+    num = ranks(props)
+    p.listing(rows, lambda i, x: prop_line(p, x, num[x.get("id")]), n, footer_lines=2,
+              page_cmd=f"proposals {flt}".strip())
     p.rule()
-    p.add("next: show <id> · apply <id> · proposals <specialist|file> · overview")
+    p.add("next: show <n> · apply <n> · proposals <specialist|file> · overview")
 
 
 def page_show(p, facts, scout, specs, props, n, flt):
-    x = next((x for x in props if x.get("id", "").lower() == flt.lower()), None)
-    head(p, facts, f"PROPOSAL {flt}")
+    num, x = find(props, flt)
+    head(p, facts, f"PROPOSAL {num or flt}")
     if not x:
-        p.add(f"no proposal with id {flt!r}; ids: {', '.join(y.get('id', '?') for y in props[:20])}")
+        p.add(f"no proposal number {flt!r}; the overview numbers them 1–{len(live(props))}")
         return
-    p.add(f"{tag(x)} {x.get('title', '')}")
-    p.add(f"where     {x.get('where', '')}   ({x['specialist']} · hot: {x.get('hot')} · effort {x.get('effort')})")
+    p.add(x.get("title", "") + (f"  ({tag(x)})" if tag(x) else ""))
+    p.add(f"where     {x.get('where', '')}   (runs {RUNS.get(x.get('hot'), '?')} · "
+          f"{WORK.get(x.get('effort'), '?')} change)")
     p.rule()
-    for label, key in (("now", "now"), ("faster", "change"), ("same b/c", "why_same"), ("gain", "gain"),
+    for label, key in (("now", "now"), ("faster", "change"), ("same as", "why_same"), ("gain", "gain"),
                        ("risk", "risk")):
         p.add(f"{label:<10}{x.get(key, '')}")
     p.add(f"{'note':<10}{x.get('verify_note') or x.get('note', '')}")
@@ -271,7 +308,7 @@ def page_show(p, facts, scout, specs, props, n, flt):
     if x.get("smells"):
         p.add(f"{'covers':<10}{', '.join(x['smells'])}")
     p.rule()
-    p.add(f"next: apply {x.get('id')} · proposals · overview")
+    p.add(f"next: apply {num} (make the change and test it) · overview")
 
 
 def page_hotpaths(p, facts, scout, specs, props, n, flt):
@@ -297,9 +334,10 @@ def page_specialists(p, facts, scout, specs, props, n, flt):
     for key, name in facts["specialists"].items():
         leads = [g for g in facts["leads"] if g["specialist"] == key]
         mine = [x for x in props if x.get("specialist") == key]
-        c = {k: sum(1 for x in mine if x.get("verdict") == k) for k in VERDICT_ICON}
+        c = {k: sum(1 for x in mine if x.get("verdict") == k) for k in VERDICTS}
         opened = sum(1 for g in leads if g["status"] == "open")
-        p.add(f"{key:<8}{pad(name, 34)} {len(leads):>5} {opened:>5}  ✅ {c['confirmed']} ❔ {c['unsure']} ❌ {c['rejected']}")
+        p.add(f"{key:<8}{pad(name, 34)} {len(leads):>5} {opened:>5}  {c['confirmed'] + c['unsure']} routes"
+              + (f", {c['rejected']} ruled out" if c["rejected"] else ""))
     if flt and flt in specs:  # deep mode keeps what each specialist checked
         p.rule()
         p.add(f"{flt} checked:")
@@ -313,21 +351,25 @@ def page_rejected(p, facts, scout, specs, props, n, flt):
     head(p, facts, "REJECTED")
     rows = [x for x in props if x.get("verdict") == "rejected" and matches(x, flt)]
     p.add(f"{len(rows)} proposals the verifier refuted (not the same behaviour, or no real gain)")
-    p.listing(rows, lambda i, x: f"{i:>2}. {x.get('id', '?'):<7}{pad(x.get('title', ''), 40)} "
+    p.listing(rows, lambda i, x: f"{i:>2}. {pad(x.get('title', ''), 44)} "
                                  f"{x.get('verify_note', '')}", n, footer_lines=2, page_cmd="rejected")
     p.rule()
-    p.add("next: show <id> · proposals · overview")
+    p.add("next: proposals · overview")
 
 
 def page_leads(p, facts, scout, specs, props, n, flt):
-    head(p, facts, "LEADS (ast-grep)")
+    head(p, facts, "SUSPICIOUS SPOTS (ast-grep)")
     f = flt.lower()
     rows = [g for g in facts["leads"]
             if not f or f in " ".join([g["rule"], g["specialist"], g["file"], g["status"], g["heat"]]).lower()]
-    p.add(f"{len(rows)} leads{f' matching {flt!r}' if flt else ''} · ✅ proposed · ✖ dismissed · · not judged")
+    p.add(f"{len(rows)} suspicious spots{f' matching {flt!r}' if flt else ''} · each became a route, is harmless "
+          "(reason shown), or is not checked yet")
+    num = ranks(props)
+
     def fmt(i, g):
         where = lfit(f"{g['file']}:{g['lines'][0]}", 30)
-        left = f"{LEAD_ICON[g['status']]} {g['id']:<5}{pad(g['rule'], 22)} {g['heat']:<5}{where:<30} "
+        word = f"route {num[g['id']]}" if g["id"] in num else LEAD_WORD[g["status"]]
+        left = f"{pad(word, 11)} {pad(g['rule'].replace('-', ' '), 16)} {where:<30} "
         return left + fit(g["note"] or f"{g['fn']}()" + (f" ×{len(g['lines'])}" if len(g["lines"]) > 1 else ""),
                           max(10, p.w - width(left)))
     p.listing(rows, fmt, n, footer_lines=2, page_cmd=f"leads {flt}".strip())
@@ -343,7 +385,12 @@ def main():
     ap.add_argument("--filter", default="")
     ap.add_argument("--rows", type=int)
     ap.add_argument("--cols", type=int)
+    ap.add_argument("--resolve", metavar="N", help="print the internal id of proposal number N (for apply)")
     a = ap.parse_args()
+    if a.resolve:
+        num, x = find(load(a.facts)[3], a.resolve)
+        print(x["id"] if x else f"no proposal number {a.resolve}")
+        return
     rows, cols = term_size()
     p = Page(a.rows or rows, a.cols or cols)
     facts, scout, specs, props, bad = load(a.facts)

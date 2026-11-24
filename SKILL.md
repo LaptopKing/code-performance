@@ -1,6 +1,6 @@
 ---
 name: code-performance
-description: Find ways to make existing code faster or lighter WITHOUT changing what it does, and propose the faster route for each spot. Command-first like code-audit - scan.py finds and ranks leads with ast-grep in JS/TS/Vue, Python, Go, Rust, Java, Ruby, PHP and shell (await/lookup/sort/regex in a loop, subprocess/HTTP/query per item, deep copies, clones and defers in loops, sync I/O, deep watchers) with code excerpts, the faster route and the same-behaviour check; Claude judges them in one cheap pass, benchmarks the best few when that is safe, and shows a one-window terminal dashboard. Overall mode covers a repo or folder; targeted mode digs into one function, route or flow ("why is the export slow"). `apply <id>` implements one proposal with tests and hyperfine before/after. `deep` runs an opt-in multi-agent workflow. Use whenever the user asks to optimize, speed up, profile, find bottlenecks, reduce memory/startup/bundle time, asks "why is X slow" or "how can X be faster", or says /code-optimization. Not for bugs (use code-review) or code health (use code-audit).
+description: Find ways to make existing code faster or lighter WITHOUT changing what it does, and propose the faster route for each spot. Command-first like code-audit - scan.py finds and ranks leads with ast-grep in JS/TS/Vue, Python, Go, Rust, Java, Ruby, PHP and shell (await/lookup/sort/regex in a loop, subprocess/HTTP/query per item, deep copies, clones and defers in loops, sync I/O, deep watchers) with code excerpts, the faster route and the same-behaviour check; Claude judges them in one cheap pass, benchmarks the best few when that is safe, and shows a one-window terminal dashboard. Overall mode covers a repo or folder; targeted mode digs into one function, route or flow ("why is the export slow"). `apply <n>` implements proposal number n with tests and hyperfine before/after. `deep` runs an opt-in multi-agent workflow. Use whenever the user asks to optimize, speed up, profile, find bottlenecks, reduce memory/startup/bundle time, asks "why is X slow" or "how can X be faster", or says /code-optimization. Not for bugs (use code-review) or code health (use code-audit).
 ---
 
 # Code performance review
@@ -55,7 +55,7 @@ python3 ~/.claude/skills/code-performance/scripts/scan.py <scope> [--target "<X>
 ```
 
 Prints the path of `facts.json`; `leads.txt` sits next to it. A new scan clears the old judgement.
-Then `jq '.inventory | {files, code_lines}, .rules, .lead_note' <facts.json>` (small).
+Then `jq -c '(.inventory | {files, code_lines}), .rules, .lead_note' <facts.json>` (small).
 ast-grep missing → the scan says so; tell the user `brew install ast-grep` and look at the scc
 hotspots (`jq '.inventory.hot_files'`) by hand instead.
 
@@ -76,7 +76,7 @@ Write `<dir>/notes.json`:
   "dismiss": {"L7": "≤50 chars why", "py-sort-in-loop": "lists of ≤10 items"},
   "proposals": [
     {"id": "L3", "title": "≤60 chars: what gets faster", "why_same": "≤90 chars: the check, confirmed",
-     "gain": "≤40 chars, e.g. O(n·m) → O(n+m)", "gain_class": "high|med|low", "effort": "S|M|L",
+     "gain": "≤22 chars, e.g. O(n·m) → O(n+m)", "gain_class": "high|med|low", "effort": "S|M|L",
      "risk": "≤60 chars", "verdict": "confirmed|unsure", "note": "≤90 chars: what you read",
      "measured": {"before": "41 ms", "after": "9 ms", "how": "hyperfine, n=10k, 10 runs"}}
   ]
@@ -114,8 +114,10 @@ live service or real data go to `apply`.
 python3 ~/.claude/skills/code-performance/scripts/render.py <facts.json> --page overview
 ```
 
-Pages: `overview`, `proposals`, `show --filter <id>`, `leads [--filter <rule|specialist|open|file>]`,
+Pages: `overview`, `proposals`, `show --filter <n>`, `leads [--filter <rule|specialist|open|file>]`,
 `hotpaths`, `specialists`, `rejected`. `--n 2` = next page of a long list.
+The user only sees proposal numbers 1…n (best first), never the internal ids (`L3`, `X1`): talk in
+numbers too. `--resolve <n>` prints the id behind number n when you need it for `jq`.
 
 Copy the printed block **verbatim** as your whole reply: Bash output is not shown to the user, and a
 line above the block pushes its top off screen. At most one short line under it (what you skipped,
@@ -123,20 +125,21 @@ e.g. "judged the top 30 of 84 leads"). The block's last line lists what the user
 
 ## 6. Follow-ups
 
-- "proposals io", "show L3", "leads open" → render that page. Don't rescan.
+- "proposals io", "show 2", "leads open" → render that page. Don't rescan.
 - "more" / "the rest" → judge the next leads in `leads.txt` (`sed -n` the next ~360 lines), add to
   `notes.json`, render.
 - "why is X slow" on an existing review → a targeted run (step 1).
 - "rescan" or the code changed → steps 2–5 again.
 - Lines cut off → re-render with `CODE_PERF_RESERVE=<n>` (default 10) or `--rows/--cols`.
 
-## 7. `apply <id>`: implement one proposal and prove it
+## 7. `apply <n>`: implement one proposal and prove it
 
 One proposal at a time, in this order. Acceptance: tests pass with the same counts before and after,
 the benchmark mean improves by more than twice the larger standard deviation, and only the `where`
 lines (plus imports) changed.
 
-1. Read the proposal with `jq` from `notes*.json` (or `verified/*.json` after `deep`).
+1. `render.py <facts.json> --resolve <n>` gives its id; read the proposal with `jq` from
+   `notes*.json` (or `verified/*.json` after `deep`).
 2. `git status --short <files>`: files with uncommitted changes are the user's work → ask before
    editing. Copy each file you will touch to `<dir>/applied/<id>.bak/`.
 3. Baseline: run `facts.commands.test` (none → tell the user there is no safety net and ask before
@@ -148,7 +151,7 @@ lines (plus imports) changed.
 6. Tests identical and the gain beats the noise → keep (`"status": "kept"`). Otherwise restore the
    backups (`"reverted"`) and say what failed.
 7. Write `<dir>/applied/<id>.json`: `{"id", "status", "tests_before", "tests_after", "bench_before",
-   "bench_after", "files", "note"}` (bench as mean ± stddev with units), then render `show --filter <id>`.
+   "bench_after", "files", "note"}` (bench as mean ± stddev with units), then render `show --filter <n>`.
 Never commit or stage.
 
 ## 8. `deep`: the multi-agent workflow (opt-in only)
